@@ -16,9 +16,9 @@ export interface ResumeAnalysis {
 }
 
 export async function analyzeResume(resumeText: string): Promise<ResumeAnalysis> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set');
+    throw new Error('API_KEY is not set. Please select an API key to continue.');
   }
 
   const ai = new GoogleGenAI({ apiKey });

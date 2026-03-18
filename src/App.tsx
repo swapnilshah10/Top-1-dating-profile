@@ -1,11 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FileUpload } from './components/FileUpload';
 import { ResumeViewer } from './components/ResumeViewer';
 import { Dashboard } from './components/Dashboard';
 import { extractPDFData, PdfDocumentData } from './services/pdf';
 import { analyzeResume, ResumeAnalysis } from './services/gemini';
 import { motion, AnimatePresence } from 'motion/react';
-import { FileText, Sparkles, Loader2, ArrowRight, AlertTriangle } from 'lucide-react';
+import { FileText, Sparkles, AlertTriangle, Key } from 'lucide-react';
+
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
@@ -13,6 +22,29 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [pdfData, setPdfData] = useState<PdfDocumentData | null>(null);
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
+
+  useEffect(() => {
+    const checkApiKey = async () => {
+      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(hasKey);
+      }
+    };
+    checkApiKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+      try {
+        await window.aistudio.openSelectKey();
+        // Assume success to mitigate race conditions as per guidelines
+        setHasApiKey(true);
+      } catch (error) {
+        console.error('Failed to select API key:', error);
+      }
+    }
+  };
 
   const handleFileSelect = async (selectedFile: File) => {
     setFile(selectedFile);
@@ -31,6 +63,10 @@ export default function App() {
       setStatus('done');
     } catch (error: any) {
       console.error(error);
+      // If the error is related to a missing entity/key, reset the key state
+      if (error.message?.includes('Requested entity was not found') || error.message?.includes('API_KEY')) {
+        setHasApiKey(false);
+      }
       setErrorMsg(error.message || 'An unexpected error occurred.');
       setStatus('error');
     }
@@ -43,6 +79,36 @@ export default function App() {
     setAnalysis(null);
     setErrorMsg('');
   };
+
+  if (!hasApiKey) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 text-center"
+        >
+          <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Key className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-bold text-slate-900 mb-4">API Key Required</h2>
+          <p className="text-slate-600 mb-8 leading-relaxed">
+            To use the Top 1% Optimizer, please select your Google Cloud API key. This ensures you only use your own quota and keeps your data secure.
+          </p>
+          <button
+            onClick={handleSelectKey}
+            className="w-full py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
+          >
+            <Key className="w-5 h-5" />
+            Select API Key
+          </button>
+          <p className="mt-6 text-xs text-slate-400">
+            Need a key? Visit the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-indigo-500 hover:underline">billing documentation</a>.
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
