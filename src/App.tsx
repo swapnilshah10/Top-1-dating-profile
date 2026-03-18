@@ -7,43 +7,48 @@ import { analyzeResume, ResumeAnalysis } from './services/gemini';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileText, Sparkles, AlertTriangle, Key } from 'lucide-react';
 
-declare global {
-  interface Window {
-    aistudio?: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
-  }
-}
-
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<'idle' | 'parsing' | 'analyzing' | 'done' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'parsing' | 'need_key' | 'analyzing' | 'done' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [pdfData, setPdfData] = useState<PdfDocumentData | null>(null);
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
+  const [pendingText, setPendingText] = useState<string | null>(null);
+  
+  // Custom API Key State
+  const [savedApiKey, setSavedApiKey] = useState<string>(() => localStorage.getItem('gemini_api_key') || '');
+  const [apiKeyInput, setApiKeyInput] = useState('');
 
-  useEffect(() => {
-    const checkApiKey = async () => {
-      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(hasKey);
-      }
-    };
-    checkApiKey();
-  }, []);
-
-  const handleSelectKey = async () => {
-    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
-      try {
-        await window.aistudio.openSelectKey();
-        // Assume success to mitigate race conditions as per guidelines
-        setHasApiKey(true);
-      } catch (error) {
-        console.error('Failed to select API key:', error);
+  const handleSaveKey = async () => {
+    if (apiKeyInput.trim()) {
+      const key = apiKeyInput.trim();
+      localStorage.setItem('gemini_api_key', key);
+      setSavedApiKey(key);
+      
+      if (pendingText) {
+        setStatus('analyzing');
+        try {
+          const result = await analyzeResume(pendingText, key);
+          setAnalysis(result);
+          setStatus('done');
+          setPendingText(null);
+        } catch (error: any) {
+          console.error(error);
+          if (error.message?.includes('API_KEY') || error.message?.includes('API key not valid')) {
+            handleClearKey();
+          }
+          setErrorMsg(error.message || 'An unexpected error occurred.');
+          setStatus('error');
+        }
       }
     }
+  };
+
+  const handleClearKey = () => {
+    localStorage.removeItem('gemini_api_key');
+    setSavedApiKey('');
+    setApiKeyInput('');
+    reset();
   };
 
   const handleFileSelect = async (selectedFile: File) => {
@@ -56,16 +61,22 @@ export default function App() {
       const data = await extractPDFData(selectedFile);
       setPdfData(data);
 
+      if (!savedApiKey) {
+        setPendingText(data.text);
+        setStatus('need_key');
+        return;
+      }
+
       // 2. Analyze text with Gemini
       setStatus('analyzing');
-      const result = await analyzeResume(data.text);
+      const result = await analyzeResume(data.text, savedApiKey);
       setAnalysis(result);
       setStatus('done');
     } catch (error: any) {
       console.error(error);
       // If the error is related to a missing entity/key, reset the key state
-      if (error.message?.includes('Requested entity was not found') || error.message?.includes('API_KEY')) {
-        setHasApiKey(false);
+      if (error.message?.includes('API_KEY') || error.message?.includes('API key not valid')) {
+        handleClearKey();
       }
       setErrorMsg(error.message || 'An unexpected error occurred.');
       setStatus('error');
@@ -78,37 +89,8 @@ export default function App() {
     setPdfData(null);
     setAnalysis(null);
     setErrorMsg('');
+    setPendingText(null);
   };
-
-  if (!hasApiKey) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 text-center"
-        >
-          <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Key className="w-8 h-8" />
-          </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-4">API Key Required</h2>
-          <p className="text-slate-600 mb-8 leading-relaxed">
-            To use the Top 1% Optimizer, please select your Google Cloud API key. This ensures you only use your own quota and keeps your data secure.
-          </p>
-          <button
-            onClick={handleSelectKey}
-            className="w-full py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
-          >
-            <Key className="w-5 h-5" />
-            Select API Key
-          </button>
-          <p className="mt-6 text-xs text-slate-400">
-            Need a key? Visit the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-indigo-500 hover:underline">billing documentation</a>.
-          </p>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
@@ -121,14 +103,24 @@ export default function App() {
             </div>
             <span className="font-bold text-lg tracking-tight">Top 1% Optimizer</span>
           </div>
-          {status === 'done' && (
-            <button
-              onClick={reset}
-              className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
-            >
-              Upload New Resume
-            </button>
-          )}
+          <div className="flex items-center gap-6">
+            {status === 'done' && (
+              <button
+                onClick={reset}
+                className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
+              >
+                Upload New Resume
+              </button>
+            )}
+            {savedApiKey && (
+              <button
+                onClick={handleClearKey}
+                className="text-sm font-medium text-rose-500 hover:text-rose-600 transition-colors"
+              >
+                Clear API Key
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -167,6 +159,42 @@ export default function App() {
                   <div className="text-sm text-slate-500">Actionable improvements</div>
                 </div>
               </div>
+            </motion.div>
+          )}
+
+          {status === 'need_key' && (
+            <motion.div
+              key="need_key"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="max-w-md mx-auto mt-20 text-center bg-white rounded-3xl shadow-xl p-8"
+            >
+              <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <Key className="w-8 h-8" />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-900 mb-4">Enter API Key</h2>
+              <p className="text-slate-600 mb-6 leading-relaxed text-sm">
+                Since this app is hosted externally, please provide your own API key to run the analysis. It will be stored locally in your browser and never sent to our servers.
+              </p>
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="Your API Key..."
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <button
+                onClick={handleSaveKey}
+                disabled={!apiKeyInput.trim()}
+                className="w-full py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Key className="w-5 h-5" />
+                Save Key & Analyze
+              </button>
+              <p className="mt-6 text-xs text-slate-400">
+                Your key is stored securely in your browser's local storage.
+              </p>
             </motion.div>
           )}
 

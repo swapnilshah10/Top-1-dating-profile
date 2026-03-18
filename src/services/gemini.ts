@@ -15,10 +15,10 @@ export interface ResumeAnalysis {
   highlights: Highlight[];
 }
 
-export async function analyzeResume(resumeText: string): Promise<ResumeAnalysis> {
-  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+export async function analyzeResume(resumeText: string, customApiKey?: string): Promise<ResumeAnalysis> {
+  const apiKey = customApiKey || process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('API_KEY is not set. Please select an API key to continue.');
+    throw new Error('API_KEY is not set. Please provide an API key to continue.');
   }
 
   const ai = new GoogleGenAI({ apiKey });
