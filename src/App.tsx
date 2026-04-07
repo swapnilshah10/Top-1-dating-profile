@@ -1,45 +1,76 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { FileUpload } from './components/FileUpload';
 import { ResumeViewer } from './components/ResumeViewer';
 import { Dashboard } from './components/Dashboard';
-import { extractPDFData, PdfDocumentData } from './services/pdf';
-import { analyzeResume, ResumeAnalysis } from './services/gemini';
+import { analyzeProfile, ProfileAnalysis } from './services/gemini';
 import { motion, AnimatePresence } from 'motion/react';
-import { FileText, Sparkles, AlertTriangle, Key } from 'lucide-react';
+import { Heart, Sparkles, AlertTriangle, Key } from 'lucide-react';
 
 export default function App() {
-  const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<'idle' | 'parsing' | 'need_key' | 'analyzing' | 'done' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'analyzing' | 'need_key' | 'done' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
-  const [pdfData, setPdfData] = useState<PdfDocumentData | null>(null);
-  const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
-  const [pendingText, setPendingText] = useState<string | null>(null);
-  
-  // Custom API Key State
-  const [savedApiKey, setSavedApiKey] = useState<string>(() => localStorage.getItem('gemini_api_key') || '');
+  const [analysis, setAnalysis] = useState<ProfileAnalysis | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [bioText, setBioText] = useState<string>('');
+
+  // Pending data when API key is missing
+  const [pendingData, setPendingData] = useState<{
+    imageBase64: string;
+    mimeType: string;
+    bio: string;
+  } | null>(null);
+
+  // API Key State
+  const [savedApiKey, setSavedApiKey] = useState<string>(
+    () => localStorage.getItem('gemini_api_key') || ''
+  );
   const [apiKeyInput, setApiKeyInput] = useState('');
+
+  const readFileAsBase64 = (file: File): Promise<{ base64: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        // dataUrl = "data:<mimeType>;base64,<data>"
+        const [header, data] = dataUrl.split(',');
+        const mimeType = header.replace('data:', '').replace(';base64', '');
+        resolve({ base64: data, mimeType });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const runAnalysis = async (
+    imageBase64: string,
+    mimeType: string,
+    bio: string,
+    apiKey: string
+  ) => {
+    setStatus('analyzing');
+    try {
+      const result = await analyzeProfile(imageBase64, mimeType, bio, apiKey);
+      setAnalysis(result);
+      setBioText(bio);
+      setStatus('done');
+    } catch (error: any) {
+      console.error(error);
+      if (error.message?.includes('API_KEY') || error.message?.includes('API key not valid')) {
+        handleClearKey();
+      }
+      setErrorMsg(error.message || 'An unexpected error occurred.');
+      setStatus('error');
+    }
+  };
 
   const handleSaveKey = async () => {
     if (apiKeyInput.trim()) {
       const key = apiKeyInput.trim();
       localStorage.setItem('gemini_api_key', key);
       setSavedApiKey(key);
-      
-      if (pendingText) {
-        setStatus('analyzing');
-        try {
-          const result = await analyzeResume(pendingText, key);
-          setAnalysis(result);
-          setStatus('done');
-          setPendingText(null);
-        } catch (error: any) {
-          console.error(error);
-          if (error.message?.includes('API_KEY') || error.message?.includes('API key not valid')) {
-            handleClearKey();
-          }
-          setErrorMsg(error.message || 'An unexpected error occurred.');
-          setStatus('error');
-        }
+
+      if (pendingData) {
+        setPendingData(null);
+        await runAnalysis(pendingData.imageBase64, pendingData.mimeType, pendingData.bio, key);
       }
     }
   };
@@ -51,57 +82,41 @@ export default function App() {
     reset();
   };
 
-  const handleFileSelect = async (selectedFile: File) => {
-    setFile(selectedFile);
-    setStatus('parsing');
+  const handleProfileSubmit = async (file: File, bio: string) => {
     setErrorMsg('');
+    const { base64, mimeType } = await readFileAsBase64(file);
 
-    try {
-      // 1. Extract text and bounding boxes from PDF
-      const data = await extractPDFData(selectedFile);
-      setPdfData(data);
+    // Store image preview URL
+    setImageUrl(URL.createObjectURL(file));
 
-      if (!savedApiKey) {
-        setPendingText(data.text);
-        setStatus('need_key');
-        return;
-      }
-
-      // 2. Analyze text with Gemini
-      setStatus('analyzing');
-      const result = await analyzeResume(data.text, savedApiKey);
-      setAnalysis(result);
-      setStatus('done');
-    } catch (error: any) {
-      console.error(error);
-      // If the error is related to a missing entity/key, reset the key state
-      if (error.message?.includes('API_KEY') || error.message?.includes('API key not valid')) {
-        handleClearKey();
-      }
-      setErrorMsg(error.message || 'An unexpected error occurred.');
-      setStatus('error');
+    if (!savedApiKey) {
+      setPendingData({ imageBase64: base64, mimeType, bio });
+      setStatus('need_key');
+      return;
     }
+
+    await runAnalysis(base64, mimeType, bio, savedApiKey);
   };
 
   const reset = () => {
-    setFile(null);
     setStatus('idle');
-    setPdfData(null);
     setAnalysis(null);
+    setImageUrl(null);
+    setBioText('');
     setErrorMsg('');
-    setPendingText(null);
+    setPendingData(null);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-pink-100 selection:text-pink-900">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 cursor-pointer" onClick={reset}>
-            <div className="bg-indigo-600 text-white p-1.5 rounded-lg">
-              <FileText className="w-5 h-5" />
+            <div className="bg-pink-600 text-white p-1.5 rounded-lg">
+              <Heart className="w-5 h-5" />
             </div>
-            <span className="font-bold text-lg tracking-tight">Top 1% Optimizer</span>
+            <span className="font-bold text-lg tracking-tight">Top 1% Dating Profile</span>
           </div>
           <div className="flex items-center gap-6">
             {status === 'done' && (
@@ -109,7 +124,7 @@ export default function App() {
                 onClick={reset}
                 className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
               >
-                Upload New Resume
+                Analyze New Profile
               </button>
             )}
             {savedApiKey && (
@@ -136,26 +151,27 @@ export default function App() {
             >
               <div className="text-center mb-12">
                 <h1 className="text-5xl font-black tracking-tighter text-slate-900 mb-6">
-                  Is your resume holding you back?
+                  Are you getting the matches you deserve?
                 </h1>
                 <p className="text-xl text-slate-600 leading-relaxed">
-                  Get a brutally honest, line-by-line analysis of your resume powered by elite recruiting standards.
+                  Get brutally honest, AI-powered feedback on your dating profile — photo, bio,
+                  and everything in between.
                 </p>
               </div>
-              
-              <FileUpload onFileSelect={handleFileSelect} />
-              
+
+              <FileUpload onSubmit={handleProfileSubmit} />
+
               <div className="mt-12 grid grid-cols-3 gap-6 text-center">
                 <div className="space-y-2">
-                  <div className="font-bold text-slate-900">1. Upload PDF</div>
-                  <div className="text-sm text-slate-500">Secure & private parsing</div>
+                  <div className="font-bold text-slate-900">1. Upload Photo</div>
+                  <div className="text-sm text-slate-500">Private — never stored on servers</div>
                 </div>
                 <div className="space-y-2">
                   <div className="font-bold text-slate-900">2. AI Analysis</div>
-                  <div className="text-sm text-slate-500">Deep ATS keyword matching</div>
+                  <div className="text-sm text-slate-500">Photo, bio & attraction signals</div>
                 </div>
                 <div className="space-y-2">
-                  <div className="font-bold text-slate-900">3. Get Hired</div>
+                  <div className="font-bold text-slate-900">3. Get Matches</div>
                   <div className="text-sm text-slate-500">Actionable improvements</div>
                 </div>
               </div>
@@ -170,35 +186,37 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.95 }}
               className="max-w-md mx-auto mt-20 text-center bg-white rounded-3xl shadow-xl p-8"
             >
-              <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <div className="w-16 h-16 bg-pink-100 text-pink-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
                 <Key className="w-8 h-8" />
               </div>
-              <h2 className="text-2xl font-bold text-slate-900 mb-4">Enter API Key</h2>
+              <h2 className="text-2xl font-bold text-slate-900 mb-4">Enter Gemini API Key</h2>
               <p className="text-slate-600 mb-6 leading-relaxed text-sm">
-                Since this app is hosted externally, please provide your own API key to run the analysis. It will be stored locally in your browser and never sent to our servers.
+                Please provide your own Google Gemini API key to run the analysis. It will be stored
+                locally in your browser and never sent to our servers.
               </p>
               <input
                 type="password"
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="Your API Key..."
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                onKeyDown={(e) => e.key === 'Enter' && handleSaveKey()}
+                placeholder="Your Gemini API Key..."
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 mb-4 focus:outline-none focus:ring-2 focus:ring-pink-400"
               />
               <button
                 onClick={handleSaveKey}
                 disabled={!apiKeyInput.trim()}
-                className="w-full py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full py-4 bg-pink-600 text-white font-semibold rounded-xl hover:bg-pink-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Key className="w-5 h-5" />
-                Save Key & Analyze
+                Save Key &amp; Analyze
               </button>
               <p className="mt-6 text-xs text-slate-400">
-                Your key is stored securely in your browser's local storage.
+                Your key is stored securely in your browser's local storage only.
               </p>
             </motion.div>
           )}
 
-          {(status === 'parsing' || status === 'analyzing') && (
+          {status === 'analyzing' && (
             <motion.div
               key="loading"
               initial={{ opacity: 0, scale: 0.95 }}
@@ -207,28 +225,22 @@ export default function App() {
               className="max-w-md mx-auto mt-32 text-center"
             >
               <div className="relative w-24 h-24 mx-auto mb-8">
-                <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
-                <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
-                <div className="absolute inset-0 flex items-center justify-center text-indigo-600">
+                <div className="absolute inset-0 border-4 border-pink-100 rounded-full"></div>
+                <div className="absolute inset-0 border-4 border-pink-500 rounded-full border-t-transparent animate-spin"></div>
+                <div className="absolute inset-0 flex items-center justify-center text-pink-500">
                   <Sparkles className="w-8 h-8 animate-pulse" />
                 </div>
               </div>
-              <h2 className="text-2xl font-bold text-slate-900 mb-2">
-                {status === 'parsing' ? 'Extracting text...' : 'Analyzing your career...'}
-              </h2>
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">Analyzing your profile...</h2>
               <p className="text-slate-500">
-                {status === 'parsing'
-                  ? 'Reading PDF contents securely.'
-                  : 'Applying elite recruiting standards to your experience.'}
+                Applying data-driven attraction insights to your photo and bio.
               </p>
-              
-              {/* Fake Progress Bar for UX */}
               <div className="mt-8 h-2 bg-slate-100 rounded-full overflow-hidden">
                 <motion.div
-                  className="h-full bg-indigo-600"
+                  className="h-full bg-pink-500"
                   initial={{ width: '0%' }}
-                  animate={{ width: status === 'parsing' ? '30%' : '85%' }}
-                  transition={{ duration: 2, ease: 'easeOut' }}
+                  animate={{ width: '85%' }}
+                  transition={{ duration: 3, ease: 'easeOut' }}
                 />
               </div>
             </motion.div>
@@ -255,7 +267,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {status === 'done' && analysis && (
+          {status === 'done' && analysis && imageUrl && (
             <motion.div
               key="results"
               initial={{ opacity: 0, y: 40 }}
@@ -264,19 +276,29 @@ export default function App() {
               className="space-y-16"
             >
               <Dashboard analysis={analysis} />
-              
+
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <h2 className="text-3xl font-black tracking-tight text-slate-900">
-                    Line-by-Line Analysis
+                    Detailed Feedback
                   </h2>
                   <div className="flex gap-4 text-sm font-medium">
-                    <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-emerald-400"></span> Strong</div>
-                    <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-amber-400"></span> Polish</div>
-                    <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-rose-400"></span> Fix</div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full bg-emerald-400"></span> Strong
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full bg-amber-400"></span> Polish
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full bg-rose-400"></span> Fix
+                    </div>
                   </div>
                 </div>
-                <ResumeViewer file={file!} pdfData={pdfData!} highlights={analysis.highlights} />
+                <ResumeViewer
+                  imageUrl={imageUrl}
+                  bioText={bioText}
+                  highlights={analysis.highlights}
+                />
               </div>
             </motion.div>
           )}
