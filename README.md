@@ -33,8 +33,6 @@ An AI-powered, client-side web app that analyzes your dating profile photo and b
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/top-one-percent-resume.git
-cd top-one-percent-resume
 npm install
 npm run dev
 ```
